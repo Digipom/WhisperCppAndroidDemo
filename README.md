@@ -1,4 +1,4 @@
-A sample Android app using [whisper.cpp](https://github.com/ggerganov/whisper.cpp/) to do voice-to-text transcriptions.
+A sample Android app using [whisper.cpp](https://github.com/ggerganov/whisper.cpp/) to do voice-to-text transcriptions. For the most up-to-date code, check [whisper.cpp's examples](https://github.com/ggerganov/whisper.cpp/tree/master/examples).
 
 To use:
 
