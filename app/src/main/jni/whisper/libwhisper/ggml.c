@@ -14,9 +14,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
-// if C99 - static_assert is nop
+// if C99 - static_assert is noop
+// ref: https://stackoverflow.com/a/53923785/4039976
 #ifndef static_assert
-#define static_assert(cond, msg)
+#define static_assert(cond, msg) struct global_scope_noop_trick
 #endif
 
 #if defined _MSC_VER || defined(__MINGW32__)
@@ -332,7 +333,7 @@ inline static void ggml_vec_div_f32 (const int n, float * z, const float * x, co
 
 inline static void ggml_vec_dot_f32(const int n, float * restrict s, const float * restrict x, const float * restrict y) {
     ggml_float sumf = 0.0;
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA)
     // NEON 128-bit
     const int n16 = (n & ~15);
 
@@ -510,7 +511,7 @@ inline static void ggml_vec_dot_f32(const int n, float * restrict s, const float
 
 inline static void ggml_vec_dot_f16(const int n, float * restrict s, ggml_fp16_t * restrict x, ggml_fp16_t * restrict y) {
     ggml_float sumf = 0.0;
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA)
     const int n32 = (n & ~31);
 
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
@@ -759,7 +760,7 @@ inline static void ggml_vec_dot_f16(const int n, float * restrict s, ggml_fp16_t
 }
 
 inline static void ggml_vec_mad_f32(const int n, float * restrict y, const float * restrict x, const float v) {
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA)
     // NEON 128-bit
     const int n16 = (n & ~15);
 
@@ -908,7 +909,7 @@ inline static void ggml_vec_mad_f32(const int n, float * restrict y, const float
 }
 
 inline static void ggml_vec_mad_f16(const int n, ggml_fp16_t * restrict y, ggml_fp16_t * restrict x, const float v) {
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA)
     // NEON 128-bit
     const int n32 = (n & ~31);
 
@@ -1117,7 +1118,45 @@ inline static void ggml_vec_mad_f16(const int n, ggml_fp16_t * restrict y, ggml_
 #endif
 }
 
-inline static void ggml_vec_scale_f32(const int n, float * y, const float   v) { for (int i = 0; i < n; ++i) y[i] *= v;          }
+//inline static void ggml_vec_scale_f32(const int n, float * y, const float   v) { for (int i = 0; i < n; ++i) y[i] *= v;          }
+inline static void ggml_vec_scale_f32(const int n, float * y, const float   v) {
+#if defined(__AVX__) || defined(__AVX2__)
+    // AVX 256-bit
+    const int n32 = (n & ~31);
+
+    const __m256 v4 = _mm256_set1_ps(v);
+
+    __m256 y0, y1, y2, y3;
+
+    for (int i = 0; i < n32; i += 32) {
+        y0 = _mm256_loadu_ps(y + i + 0);
+        y1 = _mm256_loadu_ps(y + i + 8);
+        y2 = _mm256_loadu_ps(y + i + 16);
+        y3 = _mm256_loadu_ps(y + i + 24);
+
+	y0 = _mm256_mul_ps(y0, v4);
+	y1 = _mm256_mul_ps(y1, v4);
+	y2 = _mm256_mul_ps(y2, v4);
+	y3 = _mm256_mul_ps(y3, v4);
+
+        _mm256_storeu_ps(y + i + 0, y0);
+        _mm256_storeu_ps(y + i + 8, y1);
+        _mm256_storeu_ps(y + i + 16, y2);
+        _mm256_storeu_ps(y + i + 24, y3);
+    }
+
+    // leftovers
+    for (int i = n32; i < n; ++i) {
+        y[i] *= v;
+    }
+#else
+    // scalar
+    for (int i = 0; i < n; ++i) {
+        y[i] *= v;
+    }
+#endif
+}
+
 inline static void ggml_vec_norm_f32 (const int n, float * s, const float * x) { ggml_vec_dot_f32(n, s, x, x); *s = sqrt(*s);   }
 inline static void ggml_vec_sqr_f32  (const int n, float * y, const float * x) { for (int i = 0; i < n; ++i) y[i] = x[i]*x[i];   }
 inline static void ggml_vec_sqrt_f32 (const int n, float * y, const float * x) { for (int i = 0; i < n; ++i) y[i] = sqrt(x[i]); }
@@ -3177,22 +3216,96 @@ void ggml_compute_forward_dup_f16(
         return;
     }
 
-    //const int ne00 = src0->ne[0];
-    //const int ne01 = src0->ne[1];
-    //const int ne02 = src0->ne[2];
-    //const int ne03 = src0->ne[3];
+    const int ne00 = src0->ne[0];
+    const int ne01 = src0->ne[1];
+    const int ne02 = src0->ne[2];
+    const int ne03 = src0->ne[3];
 
-    //const size_t nb00 = src0->nb[0];
-    //const size_t nb01 = src0->nb[1];
-    //const size_t nb02 = src0->nb[2];
-    //const size_t nb03 = src0->nb[3];
+    const size_t nb00 = src0->nb[0];
+    const size_t nb01 = src0->nb[1];
+    const size_t nb02 = src0->nb[2];
+    const size_t nb03 = src0->nb[3];
 
     if (ggml_is_contiguous(src0) && src0->type == dst->type) {
         memcpy(dst->data, src0->data, ggml_nelements(dst) * GGML_TYPE_SIZE[src0->type]);
         return;
     }
 
-    GGML_ASSERT(false); // TODO: implement
+    if (src0->nb[0] == sizeof(ggml_fp16_t)) {
+        if (dst->type == GGML_TYPE_F16) {
+            int id = 0;
+            const size_t rs = ne00*nb00;
+
+            for (int i03 = 0; i03 < ne03; i03++) {
+                for (int i02 = 0; i02 < ne02; i02++) {
+                    for (int i01 = 0; i01 < ne01; i01++) {
+                        const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
+                        char * dst_ptr = (char *) dst->data + id*rs;
+
+                        memcpy(dst_ptr, src0_ptr, rs);
+
+                        id++;
+                    }
+                }
+            }
+        } else if (dst->type == GGML_TYPE_F32) {
+            int id = 0;
+            float * dst_ptr = (float *) dst->data;
+
+            for (int i03 = 0; i03 < ne03; i03++) {
+                for (int i02 = 0; i02 < ne02; i02++) {
+                    for (int i01 = 0; i01 < ne01; i01++) {
+                        for (int i00 = 0; i00 < ne00; i00++) {
+                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+
+                            dst_ptr[id] = GGML_FP16_TO_FP32(*src0_ptr);
+                            id++;
+                        }
+                    }
+                }
+            }
+        } else {
+            GGML_ASSERT(false); // TODO: implement
+        }
+    } else {
+        //printf("%s: this is not optimal - fix me\n", __func__);
+
+        if (dst->type == GGML_TYPE_F32) {
+            int id = 0;
+            float * dst_ptr = (float *) dst->data;
+
+            for (int i03 = 0; i03 < ne03; i03++) {
+                for (int i02 = 0; i02 < ne02; i02++) {
+                    for (int i01 = 0; i01 < ne01; i01++) {
+                        for (int i00 = 0; i00 < ne00; i00++) {
+                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+
+                            dst_ptr[id] = GGML_FP16_TO_FP32(*src0_ptr);
+                            id++;
+                        }
+                    }
+                }
+            }
+        } else if (dst->type == GGML_TYPE_F16) {
+            int id = 0;
+            ggml_fp16_t * dst_ptr = (ggml_fp16_t *) dst->data;
+
+            for (int i03 = 0; i03 < ne03; i03++) {
+                for (int i02 = 0; i02 < ne02; i02++) {
+                    for (int i01 = 0; i01 < ne01; i01++) {
+                        for (int i00 = 0; i00 < ne00; i00++) {
+                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+
+                            dst_ptr[id] = *src0_ptr;
+                            id++;
+                        }
+                    }
+                }
+            }
+        } else {
+            GGML_ASSERT(false); // TODO: implement
+        }
+    }
 }
 
 void ggml_compute_forward_dup_f32(
@@ -8313,6 +8426,14 @@ int ggml_cpu_has_avx512(void) {
 
 int ggml_cpu_has_neon(void) {
 #if defined(__ARM_NEON)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+int ggml_cpu_has_arm_fma(void) {
+#if defined(__ARM_FEATURE_FMA)
     return 1;
 #else
     return 0;
